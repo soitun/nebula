@@ -22,6 +22,9 @@ ifndef BUILD_NUMBER
 	endif
 endif
 
+DOCKER_IMAGE_REPO ?= nebulaoss/nebula
+DOCKER_IMAGE_TAG ?= latest
+
 LDFLAGS = -X main.Build=$(BUILD_NUMBER)
 
 ALL_LINUX = linux-amd64 \
@@ -37,7 +40,7 @@ ALL_LINUX = linux-amd64 \
 	linux-mips64le \
 	linux-mips-softfloat \
 	linux-riscv64 \
-        linux-loong64
+	linux-loong64
 
 ALL_FREEBSD = freebsd-amd64 \
 	freebsd-arm64
@@ -60,7 +63,7 @@ ALL = $(ALL_LINUX) \
 e2e:
 	$(TEST_ENV) go test -tags=e2e_testing -count=1 $(TEST_FLAGS) ./e2e
 
-e2ev: TEST_FLAGS = -v
+e2ev: TEST_FLAGS += -v
 e2ev: e2e
 
 e2evv: TEST_ENV += TEST_LOGS=1
@@ -79,6 +82,8 @@ DOCKER_BIN = build/linux-amd64/nebula build/linux-amd64/nebula-cert
 
 all: $(ALL:%=build/%/nebula) $(ALL:%=build/%/nebula-cert)
 
+docker: docker/linux-$(shell go env GOARCH)
+
 release: $(ALL:%=build/nebula-%.tar.gz)
 
 release-linux: $(ALL_LINUX:%=build/nebula-%.tar.gz)
@@ -91,7 +96,7 @@ release-netbsd: $(ALL_NETBSD:%=build/nebula-%.tar.gz)
 
 release-boringcrypto: build/nebula-linux-$(shell go env GOARCH)-boringcrypto.tar.gz
 
-BUILD_ARGS = -trimpath
+BUILD_ARGS += -trimpath
 
 bin-windows: build/windows-amd64/nebula.exe build/windows-amd64/nebula-cert.exe
 	mv $? .
@@ -110,6 +115,10 @@ bin-freebsd-arm64: build/freebsd-arm64/nebula build/freebsd-arm64/nebula-cert
 
 bin-boringcrypto: build/linux-$(shell go env GOARCH)-boringcrypto/nebula build/linux-$(shell go env GOARCH)-boringcrypto/nebula-cert
 	mv $? .
+
+bin-pkcs11: BUILD_ARGS += -tags pkcs11
+bin-pkcs11: CGO_ENABLED = 1
+bin-pkcs11: bin
 
 bin:
 	go build $(BUILD_ARGS) -ldflags "$(LDFLAGS)" -o ./nebula${NEBULA_CMD_SUFFIX} ${NEBULA_CMD_PATH}
@@ -151,6 +160,9 @@ build/nebula-%.tar.gz: build/%/nebula build/%/nebula-cert
 build/nebula-%.zip: build/%/nebula.exe build/%/nebula-cert.exe
 	cd build/$* && zip ../nebula-$*.zip nebula.exe nebula-cert.exe
 
+docker/%: build/%/nebula build/%/nebula-cert
+	docker build . $(DOCKER_BUILD_ARGS) -f docker/Dockerfile --platform "$(subst -,/,$*)" --tag "${DOCKER_IMAGE_REPO}:${DOCKER_IMAGE_TAG}" --tag "${DOCKER_IMAGE_REPO}:$(BUILD_NUMBER)"
+
 vet:
 	go vet $(VET_FLAGS) -v ./...
 
@@ -159,6 +171,9 @@ test:
 
 test-boringcrypto:
 	GOEXPERIMENT=boringcrypto CGO_ENABLED=1 go test -v ./...
+
+test-pkcs11:
+	CGO_ENABLED=1 go test -v -tags pkcs11 ./...
 
 test-cov-html:
 	go test -coverprofile=coverage.out

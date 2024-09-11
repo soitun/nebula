@@ -80,6 +80,8 @@ func (p *PKI) reloadCert(c *config.C, initial bool) *util.ContextualError {
 	}
 
 	if !initial {
+		//TODO: include check for mask equality as well
+
 		// did IP in cert change? if so, don't set
 		currentCert := p.cs.Load().Certificate
 		oldIPs := currentCert.Details.Ips
@@ -139,8 +141,33 @@ func newCertState(certificate *cert.NebulaCertificate, privateKey []byte) (*Cert
 	return cs, nil
 }
 
-func newCertStateFromConfig(c *config.C) (*CertState, error) {
+func loadPrivateKey(privPathOrPEM string) (rawKey []byte, curve cert.Curve, isPkcs11 bool, err error) {
 	var pemPrivateKey []byte
+	if strings.Contains(privPathOrPEM, "-----BEGIN") {
+		pemPrivateKey = []byte(privPathOrPEM)
+		privPathOrPEM = "<inline>"
+		rawKey, _, curve, err = cert.UnmarshalPrivateKey(pemPrivateKey)
+		if err != nil {
+			return nil, curve, false, fmt.Errorf("error while unmarshaling pki.key %s: %s", privPathOrPEM, err)
+		}
+	} else if strings.HasPrefix(privPathOrPEM, "pkcs11:") {
+		rawKey = []byte(privPathOrPEM)
+		return rawKey, cert.Curve_P256, true, nil
+	} else {
+		pemPrivateKey, err = os.ReadFile(privPathOrPEM)
+		if err != nil {
+			return nil, curve, false, fmt.Errorf("unable to read pki.key file %s: %s", privPathOrPEM, err)
+		}
+		rawKey, _, curve, err = cert.UnmarshalPrivateKey(pemPrivateKey)
+		if err != nil {
+			return nil, curve, false, fmt.Errorf("error while unmarshaling pki.key %s: %s", privPathOrPEM, err)
+		}
+	}
+
+	return
+}
+
+func newCertStateFromConfig(c *config.C) (*CertState, error) {
 	var err error
 
 	privPathOrPEM := c.GetString("pki.key", "")
@@ -148,20 +175,9 @@ func newCertStateFromConfig(c *config.C) (*CertState, error) {
 		return nil, errors.New("no pki.key path or PEM data provided")
 	}
 
-	if strings.Contains(privPathOrPEM, "-----BEGIN") {
-		pemPrivateKey = []byte(privPathOrPEM)
-		privPathOrPEM = "<inline>"
-
-	} else {
-		pemPrivateKey, err = os.ReadFile(privPathOrPEM)
-		if err != nil {
-			return nil, fmt.Errorf("unable to read pki.key file %s: %s", privPathOrPEM, err)
-		}
-	}
-
-	rawKey, _, curve, err := cert.UnmarshalPrivateKey(pemPrivateKey)
+	rawKey, curve, isPkcs11, err := loadPrivateKey(privPathOrPEM)
 	if err != nil {
-		return nil, fmt.Errorf("error while unmarshaling pki.key %s: %s", privPathOrPEM, err)
+		return nil, err
 	}
 
 	var rawCert []byte
@@ -186,7 +202,7 @@ func newCertStateFromConfig(c *config.C) (*CertState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error while unmarshaling pki.cert %s: %s", pubPathOrPEM, err)
 	}
-
+	nebulaCert.Pkcs11Backed = isPkcs11
 	if nebulaCert.Expired(time.Now()) {
 		return nil, fmt.Errorf("nebula certificate for this host is expired")
 	}
